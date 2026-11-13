@@ -46,6 +46,11 @@ export interface EmoteCatalogEntry {
   source: EmoteSource
   provider?: 'twitch' | 'seventv' | 'bttv' | 'ffz'
   modifier?: boolean
+  /**
+   * The active Twitch account cannot use this channel emote yet (for example,
+   * a subscriber emote without a matching subscription tier).
+   */
+  locked?: boolean
 }
 
 // ============================================================
@@ -87,6 +92,7 @@ export type BackendToDesktopMessage =
       action: 'added' | 'removed' | 'updated'
       emote: SevenTVEmote
       oldAlias?: string
+      actorName?: string
     }
   | {
       type: 'seventv_system_message'

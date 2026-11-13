@@ -298,6 +298,8 @@ export const appSettingsSchema = z.toZod<AppSettings>()(
     jeetbotIntegrationEnabled: z.boolean().optional(),
     fossabotIntegrationEnabled: z.boolean().optional(),
     nightbotIntegrationEnabled: z.boolean().optional(),
+    potatIntegrationEnabled: z.boolean().optional(),
+    supibotIntegrationEnabled: z.boolean().optional(),
     chatLayout: chatLayoutSchema.optional(),
     selfPing: selfPingConfigSchema.optional(),
   }),
@@ -516,6 +518,7 @@ export const backendToDesktopMessageSchema = z.toZod<BackendToDesktopMessage>()(
       action: z.union([z.literal('added'), z.literal('removed'), z.literal('updated')]),
       emote: sevenTVEmoteSchema,
       oldAlias: z.string().optional(),
+      actorName: z.string().trim().min(1).optional().catch(undefined),
     }),
     z.object({
       type: z.literal('seventv_system_message'),
@@ -566,6 +569,7 @@ export const emoteCatalogEntrySchema = z.toZod<EmoteCatalogEntry>()(
       .union([z.literal('twitch'), z.literal('seventv'), z.literal('bttv'), z.literal('ffz')])
       .optional(),
     modifier: z.boolean().optional(),
+    locked: z.boolean().optional(),
   }),
 )
 

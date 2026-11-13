@@ -270,6 +270,7 @@ export function UserProfileView({
     }
   }
 
+  // Render cosmetics section (7TV badges, paints, etc.)
   const isWideScreen = useMediaQuery('(min-width: 480px)')
   const cosmeticsSection =
     cosmetics?.sevenTvUserId && (badgesEnabled || paintsEnabled) ? (

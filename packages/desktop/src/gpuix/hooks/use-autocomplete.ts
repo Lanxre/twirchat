@@ -9,15 +9,18 @@ import type {
  * React port of composables/useAutocomplete.ts.
  * Logic unchanged; Vue refs become React state + memos.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { emojiShortcodeSuggestions } from '../../services/emoji-shortcodes'
 import type { FossabotCommandTarget } from '../../services/fossabot-commands'
 import type { JeetbotCommand, JeetbotCommandTarget } from '../../services/jeetbot-commands'
 import type { PublicBotCommand } from '../../services/public-bot-commands'
+import type { SupibotCommandTarget } from '../../services/supibot-commands'
 import { AUTO_TRANSLATION_COMMAND, isAutoTranslationCommand } from '../../services/translation'
 import type { TwirCommand, TwirCommandTarget } from '../../services/twir-commands'
 import {
+  createPrefixedBotCommandIndex,
+  matchPrefixedBotCommands,
   mergeBotCommandMatches,
   parseToken,
   replaceToken,
@@ -43,6 +46,7 @@ import {
   twitchMentionArguments,
   type SignaturePart,
 } from '../../views/main/utils/botCommandArguments'
+import { bareEmoteQuery, rankEmoteMatches } from '../../views/main/utils/emoteCompletion'
 import { fuzzyFilter } from '../../views/main/utils/fuzzyFilter'
 import { sanitizeDisplayText } from '../../views/shared/utils/display-text'
 import { useBackend } from '../backend/context'
@@ -80,9 +84,9 @@ interface JeetbotSuggestions {
   revision: number
 }
 
-interface PublicBotSuggestions<Target> {
+interface PublicBotSuggestions<Target, Command extends PublicBotCommand> {
   target: Target
-  commands: readonly PublicBotCommand[]
+  commands: readonly Command[]
 }
 
 /** Signature help for the bot-command argument being typed. */
@@ -174,11 +178,11 @@ function jeetbotCommandSuggestion(name: string, command: JeetbotCommand): Comman
   }
 }
 
-function usePublicBotCommands<Target>(
-  getCommands: (target: Target) => Promise<readonly PublicBotCommand[]>,
+function usePublicBotCommands<Target, Command extends PublicBotCommand>(
+  getCommands: (target: Target) => Promise<readonly Command[]>,
   target: Target | undefined,
-): readonly PublicBotCommand[] | undefined {
-  const [suggestions, setSuggestions] = useState<PublicBotSuggestions<Target>>()
+): readonly Command[] | undefined {
+  const [suggestions, setSuggestions] = useState<PublicBotSuggestions<Target, Command>>()
   useEffect(() => {
     if (target === undefined) return undefined
     let current = true
@@ -333,6 +337,9 @@ export function useAutocomplete(params: {
   fossabotChannelLogin?: string
   fossabotTwitchChannelId?: string
   nightbotChannelLogin?: string
+  potatChannelLogin?: string
+  supibotChannelLogin?: string
+  supibotUserLogin?: string
 }) {
   const { text, setText, messages, watchedChannel, statuses, aliasMap } = params
   const backend = useBackend()
@@ -459,6 +466,24 @@ export function useAutocomplete(params: {
     backend.api.getNightbotCommands,
     botQuery === undefined ? undefined : params.nightbotChannelLogin,
   )
+  const potatCommands = usePublicBotCommands(backend.api.getPotatCommands, params.potatChannelLogin)
+  const { supibotChannelLogin, supibotUserLogin } = params
+  const supibotTarget = useMemo(
+    (): SupibotCommandTarget | undefined =>
+      supibotChannelLogin
+        ? { channelLogin: supibotChannelLogin, userLogin: supibotUserLogin }
+        : undefined,
+    [supibotChannelLogin, supibotUserLogin],
+  )
+  const supibotCommands = usePublicBotCommands(backend.api.getSupibotCommands, supibotTarget)
+  const potatCommandIndex = useMemo(
+    () => (potatCommands?.length ? createPrefixedBotCommandIndex(potatCommands) : undefined),
+    [potatCommands],
+  )
+  const supibotCommandIndex = useMemo(
+    () => (supibotCommands?.length ? createPrefixedBotCommandIndex(supibotCommands) : undefined),
+    [supibotCommands],
+  )
   const twirMatches = useMemo(() => {
     if (!twirCommands || botQuery === undefined) return EMPTY_BOT_SUGGESTIONS
     const matches: CommandSuggestion[] = []
@@ -482,13 +507,34 @@ export function useAutocomplete(params: {
       return name === undefined ? [] : [jeetbotCommandSuggestion(name, command)]
     })
   }, [jeetbotCommands, botQuery])
+  const prefixedQuery = potatCommandIndex || supibotCommandIndex ? text : ''
   const botCommandMatches = useMemo(() => {
+    if (botQuery === undefined && !prefixedQuery) return EMPTY_BOT_SUGGESTIONS
     const matches = mergeBotCommandMatches(twirMatches, jeetbotMatches)
-    if (botQuery === undefined) return matches
-    appendPublicBotCommandMatches(matches, fossabotCommands, 'fossabot', botQuery)
-    appendPublicBotCommandMatches(matches, nightbotCommands, 'nightbot', botQuery)
-    return matches
-  }, [twirMatches, jeetbotMatches, fossabotCommands, nightbotCommands, botQuery])
+    if (botQuery !== undefined) {
+      appendPublicBotCommandMatches(matches, fossabotCommands, 'fossabot', botQuery)
+      appendPublicBotCommandMatches(matches, nightbotCommands, 'nightbot', botQuery)
+    }
+    const potatMatches = potatCommandIndex
+      ? matchPrefixedBotCommands(potatCommandIndex, prefixedQuery, 'potat')
+      : EMPTY_BOT_SUGGESTIONS
+    const supibotMatches = supibotCommandIndex
+      ? matchPrefixedBotCommands(supibotCommandIndex, prefixedQuery, 'supibot')
+      : EMPTY_BOT_SUGGESTIONS
+    if (potatMatches.length || supibotMatches.length) {
+      return matches.concat(potatMatches, supibotMatches)
+    }
+    return matches.length ? matches : EMPTY_BOT_SUGGESTIONS
+  }, [
+    twirMatches,
+    jeetbotMatches,
+    fossabotCommands,
+    nightbotCommands,
+    botQuery,
+    potatCommandIndex,
+    supibotCommandIndex,
+    prefixedQuery,
+  ])
   const completingCommand = token.mode === 'command'
   const [pluginCommands, setPluginCommands] = useState(EMPTY_PLUGIN_COMMANDS)
   useEffect(() => {
@@ -537,7 +583,11 @@ export function useAutocomplete(params: {
     }))
   }, [argumentPosition, activeArgument, partialArgument, mentionSuggestions])
 
-  const mode: ParsedToken['mode'] = argumentSuggestions.length ? 'bot-argument' : token.mode
+  const mode: ParsedToken['mode'] = argumentSuggestions.length
+    ? 'bot-argument'
+    : botCommandMatches.length
+      ? 'bot-command'
+      : token.mode
   // An optional argument lists its values before anything is typed, but selects none of them:
   // Enter still sends the bare command, arrows or Tab pick a value.
   const unprompted =
@@ -550,23 +600,30 @@ export function useAutocomplete(params: {
       : mode === 'command'
         ? `/${query}`
         : mode === 'bot-command'
-          ? `!${query}`
+          ? prefixedQuery || `!${query}`
           : query
 
-  const emoteSuggestions = useMemo((): EmoteSuggestion[] => {
-    if (!emoteCompletionActive || !platform || !channelId) return EMPTY_EMOTE_SUGGESTIONS
+  const getEmoteSuggestions = useCallback((): EmoteSuggestion[] => {
+    if (!platform || !channelId) return EMPTY_EMOTE_SUGGESTIONS
     const favorites = new Set(emotePreferences.favorites.map(favoriteEmoteKey))
-    const entries = [...(emotes.get(`${platform}:${channelId}`) ?? [])].sort(
-      (a, b) =>
-        Number(favorites.has(favoriteEmoteKey(b))) - Number(favorites.has(favoriteEmoteKey(a))),
-    )
+    const entries = [...(emotes.get(`${platform}:${channelId}`) ?? [])]
+      .filter((entry) => entry.locked !== true)
+      .sort(
+        (a, b) =>
+          Number(favorites.has(favoriteEmoteKey(b))) - Number(favorites.has(favoriteEmoteKey(a))),
+      )
     return entries.map((e) => ({
       type: 'emote',
       label: e.alias,
       imageUrl: e.imageUrl,
       animated: e.animated,
     }))
-  }, [emoteCompletionActive, emotes, platform, channelId, emotePreferences.favorites])
+  }, [emotes, platform, channelId, emotePreferences.favorites])
+
+  const emoteSuggestions = useMemo(
+    () => (emoteCompletionActive ? getEmoteSuggestions() : EMPTY_EMOTE_SUGGESTIONS),
+    [emoteCompletionActive, getEmoteSuggestions],
+  )
 
   const suggestions = useMemo((): AutocompleteSuggestion[] => {
     if (!mode) return []
@@ -609,7 +666,7 @@ export function useAutocomplete(params: {
     if (mode === 'mention') {
       return fuzzyFilter(mentionSuggestions, query).slice(0, 15)
     }
-    const emoteMatches = fuzzyFilter(emoteSuggestions, query).slice(
+    const emoteMatches = rankEmoteMatches(emoteSuggestions, query).slice(
       0,
       emotePreferences.emojiCompletion ? 10 : 15,
     )
@@ -660,6 +717,16 @@ export function useAutocomplete(params: {
     setClosedQuery('')
   }
 
+  function completeBareEmote(): boolean {
+    if (mode !== null) return false
+    const bareQuery = bareEmoteQuery(text)
+    if (!bareQuery) return false
+    const match = rankEmoteMatches(getEmoteSuggestions(), bareQuery)[0]
+    if (!match) return false
+    setText(`${text.slice(0, -bareQuery.length)}${match.label} `)
+    return true
+  }
+
   function moveUp(): void {
     if (suggestions.length === 0) return
     setSelectedIndex(activeIndex <= 0 ? suggestions.length - 1 : activeIndex - 1)
@@ -685,6 +752,7 @@ export function useAutocomplete(params: {
     selectedIndex: activeIndex,
     mode,
     selectSuggestion,
+    completeBareEmote,
     moveUp,
     moveDown,
     close,
